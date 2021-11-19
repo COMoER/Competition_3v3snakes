@@ -372,6 +372,7 @@ class Snake():
         self.init_len = init_len
 
     def get_score(self):
+        # the score of snake length to per snake
         return len(self.segments) - self.init_len
 
     def change_direction(self, act):

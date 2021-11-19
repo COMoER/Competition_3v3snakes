@@ -8,46 +8,14 @@ from torch.distributions import Categorical
 import os
 import yaml
 
-device = torch.device("cuda:1") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 
-def hard_update(source, target):
-    target.load_state_dict(source.state_dict())
-
-
-def soft_update(source, target, tau):
-    for src_param, tgt_param in zip(source.parameters(), target.parameters()):
-        tgt_param.data.copy_(
-            tgt_param.data * (1.0 - tau) + src_param.data * tau
-        )
-
-
-Activation = Union[str, nn.Module]
-
-_str_to_activation = {
-    'relu': nn.ReLU(),
-    'tanh': nn.Tanh(),
-    'identity': nn.Identity(),
-    'softmax': nn.Softmax(dim=-1),
-}
-
-
-def mlp(sizes,
-        activation: Activation = 'relu',
-        output_activation: Activation = 'identity'):
-    if isinstance(activation, str):
-        activation = _str_to_activation[activation]
-    if isinstance(output_activation, str):
-        output_activation = _str_to_activation[output_activation]
-
-    layers = []
-    for i in range(len(sizes) - 1):
-        act = activation if i < len(sizes) - 2 else output_activation
-        layers += [nn.Linear(sizes[i], sizes[i + 1]), act]
-    return nn.Sequential(*layers)
-
-
-def make_grid_map(board_width, board_height, beans_positions:list, snakes_positions:dict):
+def make_grid_map(board_width, board_height, beans_positions: list, snakes_positions: dict):
+    """
+    snake: 2,3,4,5,6,7
+    bean: 1
+    """
     snakes_map = [[[0] for _ in range(board_width)] for _ in range(board_height)]
     for index, pos in snakes_positions.items():
         for p in pos:
@@ -101,11 +69,28 @@ def greedy_snake(state_map, beans, snakes, width, height, ctrl_agent_index):
     return actions
 
 
-# Self position:        0:head_x; 1:head_y
-# Head surroundings:    2:head_up; 3:head_down; 4:head_left; 5:head_right
-# Beans positions:      (6, 7) (8, 9) (10, 11) (12, 13) (14, 15)
-# Other snake positions: (16, 17) (18, 19) (20, 21) (22, 23) (24, 25) -- (other_x - self_x, other_y - self_y)
+
 def get_observations(state, agents_index, obs_dim, height, width):
+    """
+    - all position should be normalized by width and height
+    - agent observation
+    - Self position:        0:head_x; 1:head_y
+    - Head surroundings:    2:head_up; 3:head_down; 4:head_left; 5:head_right (the number of the object inside that pos)
+    - Beans positions:      (6, 7) (8, 9) (10, 11) (12, 13) (14, 15)
+    - Other snake positions: (16, 17) (18, 19) (20, 21) (22, 23) (24, 25) -- (other_x - self_x, other_y - self_y)
+
+    - global state
+    - just the grid map
+
+    Args:
+        state: global state dict
+        agents_index: the ctrl_agents index
+        obs_dim: observation dimension for each agents
+        height: map height
+        width: map width
+    Return:
+        observations(the obs vector to each agents) state_input(global state map to treat as the mixing net hypernetwork) input
+    """
     state_copy = state.copy()
     board_width = state_copy['board_width']
     board_height = state_copy['board_height']
@@ -113,71 +98,112 @@ def get_observations(state, agents_index, obs_dim, height, width):
     snakes_positions = {key: state_copy[key] for key in state_copy.keys() & {2, 3, 4, 5, 6, 7}}
     snakes_positions_list = []
     for key, value in snakes_positions.items():
-        snakes_positions_list.append(value)
+        snakes_positions_list.append(np.array(value,dtype = int))
+    # create grid_map to store state
     snake_map = make_grid_map(board_width, board_height, beans_positions, snakes_positions)
     state_ = np.array(snake_map)
+
     state = np.squeeze(state_, axis=2)
+    state_input = state.copy()/7 # normalized
 
     observations = np.zeros((3, obs_dim))
-    snakes_position = np.array(snakes_positions_list, dtype=object)
-    beans_position = np.array(beans_positions, dtype=object).flatten()
+
+    beans_position = np.array(beans_positions, dtype=int)
+    beans_position[:, 0] /= board_height
+    beans_position[:, 1] /= board_width
     for i in agents_index:
         # self head position
-        observations[i][:2] = snakes_position[i][0][:]
+        head_x = snakes_positions_list[i][0,1]
+        head_y = snakes_positions_list[i][0,0]
 
+        observations[i][:2] = head_x/board_width,head_y/board_height
         # head surroundings
-        head_x = snakes_position[i][0][1]
-        head_y = snakes_position[i][0][0]
-        head_surrounding = get_surrounding(state, width, height, head_x, head_y)
-        observations[i][2:6] = head_surrounding[:]
+        # value [0,1,2,3,4,5,6,7] normalized by 7 which is the max
+        head_surrounding = np.array(get_surrounding(state, width, height, head_x, head_y))/7
+        observations[i][2:6] = head_surrounding
 
         # beans positions
-        observations[i][6:16] = beans_position[:]
+        observations[i][6:16] = beans_position
 
         # other snake positions
-        snake_heads = np.array([snake[0] for snake in snakes_position])
+        snake_heads = np.array([snake[0] for snake in snakes_positions_list])
         snake_heads = np.delete(snake_heads, i, 0)
-        observations[i][16:] = snake_heads.flatten()[:]
-    return observations
+        snake_heads -= snakes_positions_list[i][0]
+        snake_heads[:,0] /= board_height
+        snake_heads[:,1] /= board_width
+        observations[i][16:] = snake_heads.flatten()
+
+    return observations,state_input
 
 
-def get_reward(info, snake_index, reward, score):
+def get_reward(info, history_reward, ctrl_snake_index, enemy_snake_index, reward, done):
+    """
+    reward function
+    global reward for origin qmix
+
+    Args:
+        info: the global state information to determine the reward
+        history_reward: the historical reward given by the environment which is just the gain length of each agents
+        ctrl_snake_index: the index of the controlled snakes
+        enemy_snake_index: the index of the enemy snakes
+        reward: step reward by environment
+        done: whether the episode has been done or not
+    Return:
+        global_reward: the global reward for Q_tot to learn
+    """
+    # TODO: A fine global reward design
+
     snakes_position = np.array(info['snakes_position'], dtype=object)
-    beans_position = np.array(info['beans_position'], dtype=object)
-    snake_heads = [snake[0] for snake in snakes_position]
-    step_reward = np.zeros(len(snake_index))
-    for i in snake_index:
-        if score == 1:
-            step_reward[i] += 50
-        elif score == 2:
-            step_reward[i] -= 25
-        elif score == 3:
-            step_reward[i] += 10
-        elif score == 4:
-            step_reward[i] -= 5
+    beans_position = np.array(info['beans_position'], dtype=int).reshape((1,-1,2))
+    snake_heads = np.array([snake[0] for snake in snakes_position],dtype = int)
+    self_heads:np.ndarray = snake_heads[ctrl_snake_index]
 
-        if reward[i] > 0:
-            step_reward[i] += 20 # eat
+    step_reward = 0
+    self_length = np.sum(history_reward[ctrl_snake_index])
+    enemy_length = np.sum(history_reward[enemy_snake_index])
+    if self_length > enemy_length:
+        # take advantage
+        if done:
+            # final win
+            step_reward += 50
         else:
-            self_head = np.array(snake_heads[i])
-            dists = [np.sqrt(np.sum(np.square(other_head - self_head))) for other_head in beans_position]
-            step_reward[i] -= min(dists)
-            if reward[i] < 0:
-                step_reward[i] -= 10
+            # step win
+            step_reward += 10
+    if self_length < enemy_length:
+        if done:
+            # final lose
+            step_reward -= 25
+        else:
+            # step lose
+            step_reward -= 5
+    self_reward = reward[ctrl_snake_index]
+
+    # calculate the step gain of each control
+    step_reward += np.sum(self_reward>0)*20
+
+    dist = self_heads.reshape((-1,1,2)) - beans_position # (N,B,2)
+
+    min_bean_dist = np.min(np.linalg.norm(dist,axis = 2),axis = 1) #(N,)
+    step_reward -= np.sum(min_bean_dist[self_reward<=0])
+    step_reward -= np.sum(self_reward<0)*10
 
     return step_reward
 
 
-def logits_random(act_dim, logits):
-    logits = torch.Tensor(logits).to(device)
-    acs = [Categorical(out).sample().item() for out in logits]
-    num_agents = len(logits)
+def action_random(act_dim, actions_ctrl):
+    """
+    when training, enemy is random policy
+    """
+    num_agents = len(actions_ctrl)
     actions = np.random.randint(act_dim, size=num_agents << 1)
-    actions[:num_agents] = acs[:]
+    actions[:num_agents] = actions_ctrl
     return actions
 
 
-def logits_greedy(state, logits, height, width):
+def action_greedy(state, actions_ctrl, height, width):
+    """
+    when training, enemy is greedy policy
+    """
     state_copy = state.copy()
     board_width = state_copy['board_width']
     board_height = state_copy['board_height']
@@ -198,13 +224,10 @@ def logits_greedy(state, logits, height, width):
         snakes_positions_list.append(value)
     snakes = snakes_positions_list
 
-    logits = torch.Tensor(logits).to(device)
-    logits_action = np.array([Categorical(out).sample().item() for out in logits])
-
     greedy_action = greedy_snake(state, beans, snakes, width, height, [3, 4, 5])
 
     action_list = np.zeros(6)
-    action_list[:3] = logits_action
+    action_list[:3] = actions_ctrl
     action_list[3:] = greedy_action
 
     return action_list

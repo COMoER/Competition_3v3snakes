@@ -8,7 +8,7 @@ from torch.distributions import Categorical
 import os
 import yaml
 
-device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device("cuda:2") if torch.cuda.is_available() else torch.device("cpu")
 
 
 def make_grid_map(board_width, board_height, beans_positions: list, snakes_positions: dict):
@@ -108,9 +108,9 @@ def get_observations(state, agents_index, obs_dim, height, width):
 
     observations = np.zeros((3, obs_dim))
 
-    beans_position = np.array(beans_positions, dtype=int)
-    beans_position[:, 0] /= board_height
-    beans_position[:, 1] /= board_width
+    beans_position = np.array(beans_positions, dtype=float)
+    beans_position[:, 0] /= board_height # y
+    beans_position[:, 1] /= board_width # x
     for i in agents_index:
         # self head position
         head_x = snakes_positions_list[i][0,1]
@@ -123,12 +123,12 @@ def get_observations(state, agents_index, obs_dim, height, width):
         observations[i][2:6] = head_surrounding
 
         # beans positions
-        observations[i][6:16] = beans_position
+        observations[i][6:16] = beans_position.flatten()
 
         # other snake positions
         snake_heads = np.array([snake[0] for snake in snakes_positions_list])
         snake_heads = np.delete(snake_heads, i, 0)
-        snake_heads -= snakes_positions_list[i][0]
+        snake_heads = snake_heads.astype(np.float)
         snake_heads[:,0] /= board_height
         snake_heads[:,1] /= board_width
         observations[i][16:] = snake_heads.flatten()
@@ -151,8 +151,6 @@ def get_reward(info, history_reward, ctrl_snake_index, enemy_snake_index, reward
     Return:
         global_reward: the global reward for Q_tot to learn
     """
-    # TODO: A fine global reward design
-
     snakes_position = np.array(info['snakes_position'], dtype=object)
     beans_position = np.array(info['beans_position'], dtype=int).reshape((1,-1,2))
     snake_heads = np.array([snake[0] for snake in snakes_position],dtype = int)
@@ -165,27 +163,25 @@ def get_reward(info, history_reward, ctrl_snake_index, enemy_snake_index, reward
         # take advantage
         if done:
             # final win
-            step_reward += 50
+            step_reward += 2
         else:
             # step win
-            step_reward += 10
+            step_reward += 1
     if self_length < enemy_length:
         if done:
             # final lose
-            step_reward -= 25
+            step_reward -= 4
         else:
             # step lose
-            step_reward -= 5
+            step_reward -= 2
     self_reward = reward[ctrl_snake_index]
 
     # calculate the step gain of each control
-    step_reward += np.sum(self_reward>0)*20
+    step_reward += np.sum(self_reward)
 
-    dist = self_heads.reshape((-1,1,2)) - beans_position # (N,B,2)
-
-    min_bean_dist = np.min(np.linalg.norm(dist,axis = 2),axis = 1) #(N,)
+    dist = np.sum(np.abs(beans_position - self_heads.reshape((-1,1,2))),axis = 2) # (N,B,2)
+    min_bean_dist = np.min(dist,axis = 1) # (N,)
     step_reward -= np.sum(min_bean_dist[self_reward<=0])
-    step_reward -= np.sum(self_reward<0)*10
 
     return step_reward
 
@@ -240,6 +236,23 @@ def get_surrounding(state, width, height, x, y):
                    state[y][(x + 1) % width]]  # right
 
     return surrounding
+
+def get_action_available(action,ctrl_agent_index,act_dim):
+    """
+    Args:
+        action: last action
+        ctrl_agent_index: controlled agent index
+    """
+
+    ctrl_action = action[ctrl_agent_index]
+    action_limited = (ctrl_action//2)*2 + (ctrl_action+1)%2
+    action_available = []
+    for a in action_limited:
+        available = [1]*act_dim
+        available[int(a)] = 0
+        action_available.append(available)
+    return np.array(action_available)
+
 
 
 def save_config(args, save_path):

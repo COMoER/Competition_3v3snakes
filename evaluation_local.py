@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import random
-# from agent.rl.submission import agent, get_observations
+from agent.rl_test.submission import rl_agent, rl_get_observations
 from agent.qmix.submission import agent, get_observations
 from env.chooseenv import make
 from tabulate import tabulate
@@ -10,26 +10,22 @@ from torch.distributions import Categorical
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
-
 def get_actions(state, algo, indexs):
 
     # random agent
     actions = np.random.randint(4, size=3)
 
     # rl agent
-    # if algo == 'rl':
-    #     obs = get_observations(state, indexs, obs_dim=26, height=10, width=20)
-    #     logits = agent.choose_action(obs)
-    #     logits = torch.Tensor(logits)
-    #     actions = np.array([Categorical(out).sample().item() for out in logits])
-
-    # QMIX
-    if algo == 'qmix':
-        obs = get_observations(state, indexs, obs_dim=26, height=10, width=20)
-        logits = agent.choose_action(obs)
+    if algo == 'rl':
+        obs = rl_get_observations(state, indexs, obs_dim=26, height=10, width=20)
+        logits = rl_agent.choose_action(obs)
         logits = torch.Tensor(logits)
         actions = np.array([Categorical(out).sample().item() for out in logits])
 
+    # QMIX
+    if algo == 'qmix':
+        observation = get_observations(state, indexs, 26, height=10, width=20)
+        actions = agent.choose_action(observation)
 
     return actions
 
@@ -44,6 +40,8 @@ def get_join_actions(obs, algo_list):
     actions[3:] = second_action[:]
     return actions
 
+def reset():
+    agent.reset()
 
 def run_game(env, algo_list, episode, verbose=False):
 
@@ -54,6 +52,8 @@ def run_game(env, algo_list, episode, verbose=False):
         episode_reward = np.zeros(6)
 
         state = env.reset()
+
+        reset()
 
         step = 0
 

@@ -70,7 +70,7 @@ class QMIX:
         # at the beginning, update the target
         self.target_agents.update(self.agents)
         self.target_state_encoder.update(self.state_encoder)
-        self.target_mixing.update(self.target_mixing)
+        self.target_mixing.update(self.mixing)
 
         self.target_update_episode = args.update_target_episode
 
@@ -96,26 +96,39 @@ class QMIX:
         if self._epsilon > EPSILON_MIN:
             self._epsilon += rate * (EPSILON_MIN - EPSILON_MAX)
 
-    def choose_action(self, obs, evaluate=False):
+    def choose_action(self, obs, action_available,evaluate=False):
         """
         Args:
-            obs:(B,N,obs_feature) not using one_hot to encode distinct agents
+            obs:(N,obs_feature) not using one_hot to encode distinct agents
+            action_available: action couldn't take (N,act_dim) or None
         Returns:
-            logits: (B,N) the chosen action using epsilon-greedy
+            logits: (N,) the chosen action using epsilon-greedy
         """
+        N, _ = obs.shape
+        obs = obs.reshape(1,N,-1)
         obs = OneHot(obs)
-        B, N, _ = obs.shape
+
         epsilon = self._epsilon
-        obs = torch.FloatTensor([obs]).to(self.device)
-        obs = obs.view(B * N, -1)
+        obs = torch.FloatTensor([obs]).to(self.device).view(N,-1)
         self.hidden_layer, out = self.agents(obs, self.hidden_layer)
-        out = out.view(B, N, -1)
-        action_greedy = np.argmax(out.cpu().detach().numpy(), axis=2)  # B,N
+        q_value = out.cpu().detach().numpy() #(N,act_dim)
+        if not action_available is None:
+            q_value[action_available==0] = -99999 # -inf q_value to avoid choose this action
+        action_greedy = np.argmax(q_value, axis=1)  # B,N
         if evaluate:
             return action_greedy
         else:
-            action_random = np.random.randint(self.act_dim, size=self.num_agent, dtype=int)
-            mask = (np.random.random((B, N)) > epsilon).astype(int)
+            if not action_available is None:
+                action_random_list = []
+                for action in action_available:
+                    action = list(action).index(0)
+                    available_action = [0,1,2,3]
+                    available_action.pop(action)
+                    action_random_list.append(available_action[np.random.random_integers(0,self.act_dim-2)])
+                action_random = np.array(action_random_list,dtype = int)
+            else:
+                action_random = np.random.randint(self.act_dim, size=self.num_agent, dtype=int)
+            mask = (np.random.random((N,)) > epsilon).astype(int)
 
             return action_greedy * mask + action_random * (1 - mask)
 
@@ -124,13 +137,14 @@ class QMIX:
         if len(self.replay_buffer) < self.batch_size:
             return None
 
-        state_batch, obs_batch, action_batch, reward_batch, done_batch = self.replay_buffer.get_batches()
+        state_batch, obs_batch, action_batch, reward_batch, action_available_batch,done_batch = self.replay_buffer.get_batches()
 
         T = state_batch.shape[1]  # episode_length
 
         state_batch = torch.FloatTensor(state_batch).to(self.device)
-        action_batch = torch.FloatTensor(action_batch).to(self.device)
+        action_batch = torch.LongTensor(action_batch).to(self.device).view(self.batch_size,T,self.num_agent,1)
         reward_batch = torch.FloatTensor(reward_batch).to(self.device)
+        action_available_batch = torch.LongTensor(action_available_batch).to(self.device) # B,T,N,act_dim
 
         target_state_batch = state_batch[:, 1:].reshape(self.batch_size*(T-1),1,self.state_height_dim,self.state_width_dim)
         state_batch = state_batch.reshape(self.batch_size*T,1,self.state_height_dim,self.state_width_dim)
@@ -140,7 +154,7 @@ class QMIX:
         for t in range(T):
             obs = obs_batch[:, t].reshape(self.batch_size, self.num_agent, -1)
             obs = OneHot(obs)
-            obs = torch.Tensor([obs]).to(self.device)
+            obs = torch.FloatTensor([obs]).to(self.device)
             obs = obs.view(self.batch_size * self.num_agent, -1)
             self.hidden_layer, out = self.agents(obs, self.hidden_layer)
             out = out.view(self.batch_size, self.num_agent, -1)
@@ -155,35 +169,37 @@ class QMIX:
         for t in range(T):
             obs = obs_batch[:, t].reshape(self.batch_size, self.num_agent, -1)
             obs = OneHot(obs)
-            obs = torch.Tensor([obs]).to(self.device)
+            obs = torch.FloatTensor([obs]).to(self.device)
             obs = obs.view(self.batch_size * self.num_agent, -1)
-            self.target_hidden_layer, out = self.target_agents(obs, self.hidden_layer)
+            self.target_hidden_layer, out = self.target_agents(obs, self.target_hidden_layer)
             out = out.view(self.batch_size, self.num_agent, -1)
             target_out_episode.append(out)
-        out_episode = torch.stack(out_episode[:,1:], dim=1) # (B,T-1,N,out_feature)
-        max_next_q = torch.max(out_episode,dim = 3) # (B,T-1,N)
+        target_out_episode = torch.stack(target_out_episode[1:], dim=1) # (B,T-1,N,out_feature)
+        target_out_episode[action_available_batch[:,:-1]==0] = -99999 # not available
+        max_next_q = torch.max(target_out_episode,dim = 3)[0] # (B,T-1,N)
         target_state_feature = self.target_state_encoder(target_state_batch).reshape(self.batch_size,T-1,-1)
 
-        q_tot_target = self.mixing(max_next_q,target_state_feature) # B,(T-1)
+        q_tot_target = self.target_mixing(max_next_q,target_state_feature) # B,(T-1)
 
-        td_error = reward_batch[:-1] + self.gamma * q_tot_target
+        td_error = reward_batch[:,:-1] + self.gamma * q_tot_target
 
-        gap = td_error.detach() - q_tot[:-1]
+        gap = td_error.detach() - q_tot[:,:-1] # B,T-1
 
-        loss = (gap**2 + (reward_batch[-1] - q_tot[-1])**2).sum()/(self.batch_size*T)
+        loss = ((gap**2).sum() + ((reward_batch[:,-1] - q_tot[:,-1])**2).sum())/(self.batch_size*T)
 
         self.optim.zero_grad()
         loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.param, 10)
+        # grad_norm = torch.nn.utils.clip_grad_norm_(self.param, 10)
         self.optim.step()
 
         self.loss = loss
 
     def update_target(self,episode):
         if episode % self.target_update_episode == 0 and self.training:
+            print("[INFO] update target..")
             self.target_agents.update(self.agents)
             self.target_state_encoder.update(self.state_encoder)
-            self.mixing.update(self.target_mixing)
+            self.target_mixing.update(self.mixing)
 
 
     def save_model(self, filename):
@@ -205,7 +221,7 @@ class QMIX:
             self.replay_buffer = ckpt['rb']
         else:
             filename = os.path.join(run_dir,"qmix_agent_%d.pth"%episode)
-            print("[INFO] load agent %s",filename)
+            print("[INFO] load agent %s"%filename)
             self.agents.load_state_dict(torch.load(filename))
             self.agents.eval()
 

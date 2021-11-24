@@ -8,7 +8,7 @@ from torch.distributions import Categorical
 import os
 import yaml
 
-device = torch.device("cuda:2") if torch.cuda.is_available() else torch.device("cpu")
+device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 
 def make_grid_map(board_width, board_height, beans_positions: list, snakes_positions: dict):
@@ -157,34 +157,39 @@ def get_reward(info, history_reward, ctrl_snake_index, enemy_snake_index, reward
     self_heads:np.ndarray = snake_heads[ctrl_snake_index]
 
     step_reward = 0
+    reward_split = [0,0,0]
     self_length = np.sum(history_reward[ctrl_snake_index])
     enemy_length = np.sum(history_reward[enemy_snake_index])
+    # sparse reward
     if self_length > enemy_length:
         # take advantage
         if done:
             # final win
-            step_reward += 2
+            step_reward += 30
         else:
             # step win
-            step_reward += 1
+            step_reward += 15
     if self_length < enemy_length:
         if done:
             # final lose
-            step_reward -= 4
+            step_reward -= 20
         else:
             # step lose
-            step_reward -= 2
+            step_reward -= 10
     self_reward = reward[ctrl_snake_index]
+    reward_split[0] = step_reward
+    # gain reward
+    step_reward += np.sum(self_reward)*20 # the raw env target reward should be signed high weight
 
-    # calculate the step gain of each control
-    step_reward += np.sum(self_reward)
+    reward_split[1] = step_reward - reward_split[0]
 
+    # bean dist reward
     dist = np.sum(np.abs(beans_position - self_heads.reshape((-1,1,2))),axis = 2) # (N,B,2)
     min_bean_dist = np.min(dist,axis = 1) # (N,)
-    step_reward -= np.sum(min_bean_dist[self_reward<=0])
-
-    return step_reward
-
+    # step_reward -= np.sum(min_bean_dist[self_reward<=0])*4
+    step_reward -= np.sum(min_bean_dist[self_reward <= 0])
+    reward_split[2] = step_reward - reward_split[1] - reward_split[0]
+    return step_reward,np.array(reward_split)
 
 def action_random(act_dim, actions_ctrl):
     """

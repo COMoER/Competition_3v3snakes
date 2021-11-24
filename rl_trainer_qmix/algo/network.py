@@ -257,7 +257,7 @@ class Agent(nn.Module):
         x = self.fc1(obs)
         x = F.relu(x)
         h_next = self.GRU(x,h)
-        out = self.fc2(h)
+        out = self.fc2(h_next)
         return h_next,out
     def update(self,agent):
         """

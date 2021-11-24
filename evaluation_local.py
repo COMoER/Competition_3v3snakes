@@ -25,7 +25,7 @@ def get_actions(state, algo, indexs):
     # QMIX
     if algo == 'qmix':
         observation = get_observations(state, indexs, 26, height=10, width=20)
-        actions = agent.choose_action(observation)
+        actions = agent.choose_action_global(observation)
 
     return actions
 

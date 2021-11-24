@@ -85,6 +85,7 @@ def main(args):
         episode_reward = np.zeros(6,dtype = int)
 
         episode_tot_reward = 0
+        episode_tot_split_reward = np.zeros(3)
 
         action_available = None
 
@@ -108,10 +109,14 @@ def main(args):
             # =========== ======================= reward shaping ========================================
             reward = np.array(reward)
             episode_reward += reward
-            step_reward = get_reward(info, episode_reward, ctrl_agent_index,enemy_agent_index, reward, done)
+
+
+
+            step_reward,split_step_reward = get_reward(info, episode_reward, ctrl_agent_index,enemy_agent_index, reward, done)
 
             episode_tot_reward += step_reward
             # done = np.array([done] * ctrl_agent_num)
+            episode_tot_split_reward += split_step_reward
 
             # ================================== collect data ========================================
             # Store transition in R
@@ -126,8 +131,8 @@ def main(args):
                 print(f'[Episode {episode:05d}] total_reward: {np.sum(episode_reward[0:3]):d}')
                 print(f'\t\t\t\tsnake_1: {episode_reward[0]} '
                       f'snake_2: {episode_reward[1]} snake_3: {episode_reward[2]}')
-                print(f'\t\t\t\tepisode_win:{np.sum(episode_reward[ctrl_agent_num])>np.sum(episode_reward[enemy_agent_index])}')
-                print(f'\t\t\t\tself_length:{np.sum(episode_reward[ctrl_agent_num]):d} enemy_length:{np.sum(episode_reward[enemy_agent_index])}')
+                print(f'\t\t\t\tepisode_win:{np.sum(episode_reward[ctrl_agent_index])>np.sum(episode_reward[enemy_agent_index])}')
+                print(f'\t\t\t\tself_length:{np.sum(episode_reward[ctrl_agent_index]):d} enemy_length:{np.sum(episode_reward[enemy_agent_index])}')
 
                 reward_tag = 'reward'
 
@@ -137,11 +142,14 @@ def main(args):
 
                 score_tag = 'score'
                 writer.add_scalars(score_tag, global_step=episode,
-                                   tag_scalar_dict={'mean_step_reward':episode_tot_reward/step})
+                                   tag_scalar_dict={'mean_step_reward':episode_tot_reward/step,
+                                                    "mean_sparse_reward":episode_tot_split_reward[0]/step,
+                                                    'mean_gain_reward':episode_tot_split_reward[1]/step,
+                                                    'mean_dist_reward':episode_tot_split_reward[2]/step})
 
                 win_tag = 'win_rate'
                 writer.add_scalars(win_tag, global_step=episode,
-                                   tag_scalar_dict={'win_rate':int(np.sum(episode_reward[ctrl_agent_num])>np.sum(episode_reward[enemy_agent_index]))})
+                                   tag_scalar_dict={'win_rate':int(np.sum(episode_reward[ctrl_agent_index])>np.sum(episode_reward[enemy_agent_index]))})
 
                 env.reset()
                 break

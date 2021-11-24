@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import numpy as np
 
 device = torch.device("cpu")
-EPISODE = 4000
+EPISODE = 50000
 
 
 
@@ -66,17 +66,16 @@ def get_observations(state, agents_index, obs_dim, height, width):
     state_ = np.array(snake_map)
 
     state = np.squeeze(state_, axis=2)
-    state_input = state.copy()/7 # normalized
 
     observations = np.zeros((3, obs_dim))
 
     beans_position = np.array(beans_positions, dtype=float)
     beans_position[:, 0] /= board_height # y
     beans_position[:, 1] /= board_width # x
-    for i in agents_index:
+    for i,element in enumerate(agents_index):
         # self head position
-        head_x = snakes_positions_list[i][0,1]
-        head_y = snakes_positions_list[i][0,0]
+        head_x = snakes_positions_list[element][0,1]
+        head_y = snakes_positions_list[element][0,0]
 
         observations[i][:2] = head_x/board_width,head_y/board_height
         # head surroundings
@@ -89,13 +88,13 @@ def get_observations(state, agents_index, obs_dim, height, width):
 
         # other snake positions
         snake_heads = np.array([snake[0] for snake in snakes_positions_list])
-        snake_heads = np.delete(snake_heads, i, 0)
+        snake_heads = np.delete(snake_heads, element, 0)
         snake_heads = snake_heads.astype(np.float)
         snake_heads[:,0] /= board_height
         snake_heads[:,1] /= board_width
         observations[i][16:] = snake_heads.flatten()
 
-    return observations,state_input
+    return observations
 
 HIDDEN_SIZE = 64
 
@@ -136,7 +135,7 @@ class Agent(nn.Module):
         x = self.fc1(obs)
         x = F.relu(x)
         h_next = self.GRU(x, h)
-        out = self.fc2(h)
+        out = self.fc2(h_next)
         return h_next, out
 
     def update(self, agent):
@@ -180,20 +179,35 @@ class QMIX:
         """
         self.hidden_layer = self.agents.init_hidden()
         self.hidden_layer = self.hidden_layer.expand(self.num_agent, -1)
+    def update_hidden(self,h):
+        self.hidden_layer = h
+    def choose_action_global(self,obs):
+        with torch.no_grad():
+            obs = OneHot(obs)
+            N, _ = obs.shape
+            obs = torch.FloatTensor([obs]).to(self.device).reshape(self.num_agent, -1)
+            self.hidden_layer, out = self.agents(obs, self.hidden_layer)
+            q_value = out.cpu().detach().numpy()
+            action_greedy = np.argmax(q_value, axis=1)
+            return action_greedy
 
-    def choose_action(self, obs):
+    def choose_action(self, obs,action_available,index):
         """
         Args:
             obs:(N,obs_feature) not using one_hot to encode distinct agents
         Returns:
             logits: (N) the chosen action using epsilon-greedy
         """
-        obs = OneHot(obs)
-        N, _ = obs.shape
-        obs = torch.FloatTensor([obs]).to(self.device).reshape(self.num_agent,-1)
-        self.hidden_layer, out = self.agents(obs, self.hidden_layer)
-        action_greedy = np.argmax(out.cpu().detach().numpy(), axis=1)
-        return action_greedy
+        with torch.no_grad():
+            obs = OneHot(obs)
+            N, _ = obs.shape
+            obs = torch.FloatTensor([obs]).to(self.device).reshape(self.num_agent, -1)
+            h, out = self.agents(obs, self.hidden_layer)
+            q_value = out.cpu().detach().numpy()
+            q_value[index][action_available == 0] = -99999
+            action_greedy = np.argmax(q_value, axis=1)
+
+        return action_greedy,h
 
 
     def load_model(self, run_dir, episode):
@@ -206,21 +220,26 @@ agent.reset()
 actor_net = os.path.dirname(os.path.abspath(__file__))
 agent.load_model(actor_net,EPISODE)
 
-def to_joint_action(action):
-    action = action.reshape(-1,1)
-    joint_action = np.zeros((len(action),4),np.int)
-    for i,a in enumerate(action):
-        joint_action[i,a] = 1
-    return joint_action.tolist()
+def to_joint_action(action,index):
+    action = action[index]
+    joint_action = [0]*4
+    joint_action[action] = 1
+    return [joint_action]
 def my_controller(observation_list, action_space_list, is_act_continuous):
     obs_dim = 26
     obs = observation_list.copy()
     board_width = obs['board_width']
     board_height = obs['board_height']
     o_index = obs['controlled_snake_index']  # 2, 3, 4, 5, 6, 7 -> indexs = [0,1,2,3,4,5]
+    action_available = np.array([1, 1, 1, 1])
+    if not obs['last_direction'] is None:
+        last_direction = ['up','down','left','right'].index(obs['last_direction'][o_index-2])
+        action_available[last_direction//2*2+(last_direction+1)%2] = 0
     o_indexs_min = 3 if o_index > 4 else 0
     indexs = [o_indexs_min, o_indexs_min + 1, o_indexs_min + 2]
     observation = get_observations(obs, indexs, obs_dim, height=board_height, width=board_width)
-    actions = agent.choose_action(observation)
-    actions = to_joint_action(actions)
+    actions,h = agent.choose_action(observation,action_available,(o_index-2)%3)
+    if (o_index-2)%3 == 2:
+        agent.update_hidden(h)
+    actions = to_joint_action(actions,(o_index-2)%3)
     return actions

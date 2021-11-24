@@ -5,3 +5,4 @@ logs/
 rl_trainer/models/
 rl_trainer_qmix/models/
 *.pth
+vis/*

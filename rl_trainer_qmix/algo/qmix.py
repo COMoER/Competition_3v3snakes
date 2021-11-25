@@ -74,6 +74,9 @@ class QMIX:
 
         self.target_update_episode = args.update_target_episode
 
+        self.isDoubleDQN = args.DoubleDQN
+        self.judgeIndependent = args.judgeIndependent
+
         # initialize the optimizer
         self.param = list(self.agents.parameters())
         self.param += self.state_encoder.parameters()
@@ -127,10 +130,17 @@ class QMIX:
                     action_random_list.append(available_action[np.random.random_integers(0,self.act_dim-2)])
                 action_random = np.array(action_random_list,dtype = int)
             else:
-                action_random = np.random.randint(self.act_dim, size=self.num_agent, dtype=int)
-            mask = (np.random.random((N,)) > epsilon).astype(int)
 
-            return action_greedy * mask + action_random * (1 - mask)
+                action_random = np.random.randint(self.act_dim, size=self.num_agent, dtype=int)
+
+            if self.judgeIndependent:
+                mask = (np.random.random((N,)) > epsilon).astype(int)
+                return action_greedy * mask + action_random * (1 - mask)
+            else:
+                if np.random.random() > epsilon:
+                    return action_greedy
+                else:
+                    return action_random
 
     def update(self):
 
@@ -174,11 +184,19 @@ class QMIX:
             self.target_hidden_layer, out = self.target_agents(obs, self.target_hidden_layer)
             out = out.view(self.batch_size, self.num_agent, -1)
             target_out_episode.append(out)
-        target_out_episode = torch.stack(target_out_episode[1:], dim=1) # (B,T-1,N,out_feature)
-        target_out_episode[action_available_batch[:,:-1]==0] = -99999 # not available
-        max_next_q = torch.max(target_out_episode,dim = 3)[0] # (B,T-1,N)
-        target_state_feature = self.target_state_encoder(target_state_batch).reshape(self.batch_size,T-1,-1)
 
+        target_out_episode = torch.stack(target_out_episode[1:], dim=1) # (B,T-1,N,out_feature)
+        if self.isDoubleDQN:
+            # Double DQN
+            next_state_q_tot = out_episode[:, 1:].clone().detach()  # B,T-1,N,act_dim
+            next_state_q_tot[action_available_batch[:,:-1]==0] = -99999 # not available
+            max_next_action = torch.argmax(next_state_q_tot,dim=3,keepdim=True) # (B,T-1,N,1)
+            max_next_q = torch.gather(target_out_episode, dim=3, index=max_next_action).squeeze(3)  # B,T-1,N
+        else:
+            target_out_episode[action_available_batch[:, :-1] == 0] = -99999  # not available
+            max_next_q = torch.max(target_out_episode,dim=3)[0]  # B,T-1,N
+
+        target_state_feature = self.target_state_encoder(target_state_batch).reshape(self.batch_size, T - 1, -1)
         q_tot_target = self.target_mixing(max_next_q,target_state_feature) # B,(T-1)
 
         td_error = reward_batch[:,:-1] + self.gamma * q_tot_target

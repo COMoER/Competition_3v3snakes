@@ -110,8 +110,6 @@ def main(args):
             reward = np.array(reward)
             episode_reward += reward
 
-
-
             step_reward,split_step_reward = get_reward(info, episode_reward, ctrl_agent_index,enemy_agent_index, reward, done)
 
             episode_tot_reward += step_reward
@@ -178,7 +176,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--game_name', default="snakes_3v3", type=str)
     parser.add_argument('--algo', default="qmix", type=str, help="")
-    parser.add_argument('--max_episodes', default=50000, type=int)
+    parser.add_argument('--max_episodes', default=100000, type=int)
     parser.add_argument('--episode_length', default=200, type=int)
 
     parser.add_argument('--buffer_size', default=int(5e3), type=int)
@@ -187,6 +185,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr', default=5e-4, type=float)
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--update_target_episode', default=200, type=int)
+    parser.add_argument('--DoubleDQN', action='store_true')
+    parser.add_argument('--judgeIndependent', action='store_true')
 
     parser.add_argument("--save_interval", default=200, type=int)
     parser.add_argument("--model_episode", default=0, type=int)

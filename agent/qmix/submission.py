@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import numpy as np
 
 device = torch.device("cpu")
-EPISODE = 50000
+EPISODE = 200000
 
 
 

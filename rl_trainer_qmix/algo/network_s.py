@@ -47,14 +47,18 @@ class state_encoder(nn.Module):
             x = state.view(B,-1)
             x = F.relu(self.fc(x))
         return x
-    def update(self,agent):
+
+    def soft_update(self, agent, tau):
         """
         - only for target agents
-        - every 200 episode, update the target network param as in DQN
         Args:
             agent: the agent for training
         """
-        for param,target_param in zip(agent.parameters(),self.parameters()):
+        for param, target_param in zip(agent.parameters(), self.parameters()):
+            target_param.data * (1.0 - tau) + param.data * tau
+
+    def hard_update(self, agent):
+        for param, target_param in zip(agent.parameters(), self.parameters()):
             target_param.data.copy_(param.data)
 class MixingNet(nn.Module):
     def __init__(self,num_agent,state_dim,hidden_dim):
@@ -94,14 +98,17 @@ class MixingNet(nn.Module):
         q = q + v
         return q.view(B,T)
 
-    def update(self,agent):
+    def soft_update(self, agent, tau):
         """
         - only for target agents
-        - every 200 episode, update the target network param as in DQN
         Args:
             agent: the agent for training
         """
-        for param,target_param in zip(agent.parameters(),self.parameters()):
+        for param, target_param in zip(agent.parameters(), self.parameters()):
+            target_param.data * (1.0 - tau) + param.data * tau
+
+    def hard_update(self, agent):
+        for param, target_param in zip(agent.parameters(), self.parameters()):
             target_param.data.copy_(param.data)
 
 
@@ -116,40 +123,33 @@ class Agent(nn.Module):
         self.in_feature = in_feature
         self.out_feature = out_feature
         self.fc1 = nn.Linear(in_feature,HIDDEN_SIZE)
-        # GRU
-        self.GRU = nn.GRUCell(HIDDEN_SIZE,HIDDEN_SIZE)
+        self.mlp = nn.Linear(HIDDEN_SIZE,HIDDEN_SIZE)
         self.fc2 = nn.Linear(HIDDEN_SIZE,out_feature)
-    def init_hidden(self):
-        """
-        Because the hidden size is needed to expand according to the input tensor,
-        so there just generate the size 1 hidden
-        """
-        return self.fc1.weight.new_zeros((1,HIDDEN_SIZE))
 
-    def forward(self,obs,h):
+    def forward(self,obs):
         """
         - B batch_size
         - N number of agents( all agents share the weight)
 
         Args:
             obs: (Any,in_feature)
-            h:(Any..Any,hidden_size)
         Return:
-            h_next:(Any,hidden_feature)
             out: (Any,out_feature)
         """
-        h= h.reshape(-1,HIDDEN_SIZE)
         x = self.fc1(obs)
-        x = F.relu(x)
-        h_next = self.GRU(x,h)
-        out = self.fc2(h_next)
-        return h_next,out
-    def update(self,agent):
+        x1 = F.relu(x)
+        x2 = F.relu(self.mlp(x1))
+        out = self.fc2(x2)
+        return out
+    def soft_update(self,agent,tau):
         """
         - only for target agents
-        - every 200 episode, update the target network param as in DQN
         Args:
             agent: the agent for training
         """
+        for param,target_param in zip(agent.parameters(),self.parameters()):
+            target_param.data * (1.0 - tau) + param.data * tau
+
+    def hard_update(self,agent):
         for param,target_param in zip(agent.parameters(),self.parameters()):
             target_param.data.copy_(param.data)

@@ -7,8 +7,16 @@ from typing import Union
 from torch.distributions import Categorical
 import os
 import yaml
+import random
 
 device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+
+def setup_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
 
 
 def make_grid_map(board_width, board_height, beans_positions: list, snakes_positions: dict):
@@ -70,7 +78,7 @@ def greedy_snake(state_map, beans, snakes, width, height, ctrl_agent_index):
 
 
 
-def get_observations(state, agents_index, obs_dim, height, width):
+def get_observations(state, agents_index, obs_dim, height, width,mode):
     """
     - all position should be normalized by width and height
     - agent observation
@@ -104,17 +112,29 @@ def get_observations(state, agents_index, obs_dim, height, width):
     state_ = np.array(snake_map)
 
     state = np.squeeze(state_, axis=2)
-    state_input = state.copy()/7 # normalized
+
+    if mode == 1: # one hot
+        state_index = state.reshape(-1)-1 # (1-7) -> (0,6)
+        L = np.max(state_index) + 1
+        eye = np.eye(L)
+        # One Hot
+        state_input = eye[state_index].reshape((state.shape[0],state.shape[1],L))
+    elif mode < 4: # normal or fc
+        state_input = state.copy() / 7  # normalized
+    elif mode == 4:
+        pass
+    else:
+        assert False,"No such mode"
 
     observations = np.zeros((3, obs_dim))
 
     beans_position = np.array(beans_positions, dtype=float)
     beans_position[:, 0] /= board_height # y
     beans_position[:, 1] /= board_width # x
-    for i in agents_index:
+    for i,element in enumerate(agents_index):
         # self head position
-        head_x = snakes_positions_list[i][0,1]
-        head_y = snakes_positions_list[i][0,0]
+        head_x = snakes_positions_list[element][0,1]
+        head_y = snakes_positions_list[element][0,0]
 
         observations[i][:2] = head_x/board_width,head_y/board_height
         # head surroundings
@@ -127,16 +147,30 @@ def get_observations(state, agents_index, obs_dim, height, width):
 
         # other snake positions
         snake_heads = np.array([snake[0] for snake in snakes_positions_list])
-        snake_heads = np.delete(snake_heads, i, 0)
+        snake_heads = np.delete(snake_heads, element, 0)
         snake_heads = snake_heads.astype(np.float)
         snake_heads[:,0] /= board_height
         snake_heads[:,1] /= board_width
         observations[i][16:] = snake_heads.flatten()
 
+    if mode == 4:
+        # just the info of each snake
+        state_input = np.zeros(10+12)
+
+        # beans positions 5*2
+        state_input[:10] = beans_position.flatten()
+
+        # snake positions 2*6 TODO: just snake head?
+        snake_heads = np.array([snake[0] for snake in snakes_positions_list])
+        snake_heads = snake_heads.astype(np.float)
+        snake_heads[:,0] /= board_height
+        snake_heads[:,1] /= board_width
+        state_input[10:] = snake_heads.flatten()
+
     return observations,state_input
 
 
-def get_reward(info, history_reward, ctrl_snake_index, enemy_snake_index, reward, done):
+def get_reward(info, history_reward, ctrl_snake_index, enemy_snake_index, reward, done,args):
     """
     reward function
     global reward for origin qmix
@@ -165,21 +199,21 @@ def get_reward(info, history_reward, ctrl_snake_index, enemy_snake_index, reward
         # take advantage
         if done:
             # final win
-            step_reward += 30
+            step_reward += args.win_gain # 30
         else:
             # step win
-            step_reward += 15
+            step_reward += args.win_gain//2 # 15
     if self_length < enemy_length:
         if done:
             # final lose
-            step_reward -= 20
+            step_reward -= args.lose_gain # 20
         else:
             # step lose
-            step_reward -= 10
+            step_reward -= args.lose_gain//2 # 10
     self_reward = reward[ctrl_snake_index]
     reward_split[0] = step_reward
     # gain reward
-    step_reward += np.sum(self_reward)*20 # the raw env target reward should be signed high weight
+    step_reward += np.sum(self_reward)*args.step_radio # the raw env target reward should be signed high weight 20
 
     reward_split[1] = step_reward - reward_split[0]
 
@@ -200,6 +234,38 @@ def action_random(act_dim, actions_ctrl):
     actions[:num_agents] = actions_ctrl
     return actions
 
+def action_well_trained(state, actions_ctrl, height, width,well_trained_agent):
+    """
+    when training, enemy is a above well-trained agent TODO
+    """
+    state_copy = state.copy()
+    board_width = state_copy['board_width']
+    board_height = state_copy['board_height']
+    beans_positions = state_copy[1]
+    snakes_positions = {key: state_copy[key] for key in state_copy.keys() & {2, 3, 4, 5, 6, 7}}
+    snakes_positions_list = []
+    for key, value in snakes_positions.items():
+        snakes_positions_list.append(value)
+    snake_map = make_grid_map(board_width, board_height, beans_positions, snakes_positions)
+    state_ = np.array(snake_map)
+    state = np.squeeze(state_, axis=2)
+
+    beans = state_copy[1]
+    # beans = info['beans_position']
+    snakes_positions = {key: state_copy[key] for key in state_copy.keys() & {2, 3, 4, 5, 6, 7}}
+    snakes_positions_list = []
+    for key, value in snakes_positions.items():
+        snakes_positions_list.append(value)
+    snakes = snakes_positions_list
+
+    # greedy_action = greedy_snake(state, beans, snakes, width, height, [3, 4, 5])
+    well_action = np.zeros(3)
+
+    action_list = np.zeros(6)
+    action_list[:3] = actions_ctrl
+    action_list[3:] = well_action
+
+    return action_list
 
 def action_greedy(state, actions_ctrl, height, width):
     """

@@ -2,14 +2,15 @@ import os
 import torch
 import numpy as np
 # from torch.nn.utils import clip_grad_norm_
+import torch.nn.functional as F
 from pathlib import Path
 import sys
 
 base_dir = Path(__file__).resolve().parent.parent
 sys.path.append(str(base_dir))
-from replay_buffer import ReplayBuffer
+from replay_buffer import ReplayBuffer,ReplayBuffer_s
 from common import device
-from algo.network import MixingNet, Agent, state_encoder
+from algo.network_s import MixingNet, Agent, state_encoder
 
 EPSILON_MAX = 1.
 EPSILON_MIN = .05
@@ -32,7 +33,7 @@ def OneHot(obs: np.ndarray):
     return np.concatenate([obs, encode], axis=2)
 
 
-class QMIX:
+class QMIX_s:
 
     def __init__(self, obs_dim, act_dim, state_width_dim, state_height_dim, state_feature_dim, num_agent, args):
         self.obs_dim = obs_dim + num_agent  # include one hot encode
@@ -47,6 +48,9 @@ class QMIX:
         self.gamma = args.gamma
         self.training = True
         self.state_encode_mode = args.mode
+        self.tau = args.tau
+
+        self.replay_buffer = ReplayBuffer_s(args.buffer_size, args.batch_size)
 
         self._epsilon = EPSILON_MAX
 
@@ -63,11 +67,6 @@ class QMIX:
         if not args.mode == 4:
             self.target_state_encoder = state_encoder(state_width_dim, state_height_dim, state_feature_dim,args.mode).to(device)
         self.target_mixing = MixingNet(num_agent, state_feature_dim, MIXING_HIDDEN_SIZE).to(device)
-
-        self.hidden_layer = None
-        self.target_hidden_layer = None
-        # Initialise replay buffer R
-        self.replay_buffer = ReplayBuffer(args.buffer_size, args.batch_size)
 
         self.loss = None
 
@@ -92,16 +91,9 @@ class QMIX:
         self.training = False
         self.agents.eval()
 
-    def reset(self, batch_size):
-        """
-        reset the hidden layer of each rnn when every episode begin
-        """
-        self.hidden_layer = self.agents.init_hidden().unsqueeze(0).expand(batch_size, self.num_agent, -1)
-        self.target_hidden_layer = self.target_agents.init_hidden().unsqueeze(0).expand(batch_size, self.num_agent, -1)
-
-    def epsilon_delay(self, delay_times):
+    def epsilon_delay(self):
         # update epsilon as paper
-        rate = delay_times / DELAY_TIMES
+        rate = 1 / DELAY_TIMES
         if self._epsilon > EPSILON_MIN:
             self._epsilon += rate * (EPSILON_MIN - EPSILON_MAX)
 
@@ -153,91 +145,66 @@ class QMIX:
         if len(self.replay_buffer) < self.batch_size:
             return None
 
-        state_batch, obs_batch, action_batch, reward_batch, action_available_batch,done_batch = self.replay_buffer.get_batches()
-
-        T = state_batch.shape[1]  # episode_length
+        state_batch, obs_batch, action_batch, reward_batch, next_state_batch,next_obs_batch,action_available_batch,done_batch = self.replay_buffer.get_batches()
 
         state_batch = torch.FloatTensor(state_batch).to(self.device)
-        action_batch = torch.LongTensor(action_batch).to(self.device).view(self.batch_size,T,self.num_agent,1)
+        next_state_batch = torch.FloatTensor(next_state_batch).to(self.device)
+        action_batch = torch.LongTensor(action_batch).to(self.device).view(self.batch_size,self.num_agent,1)
         reward_batch = torch.FloatTensor(reward_batch).to(self.device)
         action_available_batch = torch.LongTensor(action_available_batch).to(self.device) # B,T,N,act_dim
-
-        if self.state_encode_mode == 1:
-            target_state_batch = state_batch[:, 1:].reshape(self.batch_size * (T - 1), -1, self.state_height_dim,
-                                                            self.state_width_dim)
-            state_batch = state_batch.reshape(self.batch_size * T, -1, self.state_height_dim, self.state_width_dim)
-        elif not self.state_encode_mode == 4:
-            target_state_batch = state_batch[:, 1:].reshape(self.batch_size*(T-1),1,self.state_height_dim,self.state_width_dim)
-            state_batch = state_batch.reshape(self.batch_size*T,1,self.state_height_dim,self.state_width_dim)
-        else:
-            state_batch = state_batch.reshape(self.batch_size, T, self.state_feature_dim)
-            target_state_batch = state_batch[:, 1:].reshape(self.batch_size ,(T - 1), self.state_feature_dim)
+        done_batch = torch.FloatTensor(done_batch).to(self.device)
 
         # compute the Q_tot
-        out_episode = []
-        for t in range(T):
-            obs = obs_batch[:, t].reshape(self.batch_size, self.num_agent, -1)
-            obs = OneHot(obs)
-            obs = torch.FloatTensor([obs]).to(self.device)
-            obs = obs.view(self.batch_size * self.num_agent, -1)
-            self.hidden_layer, out = self.agents(obs, self.hidden_layer)
-            out = out.view(self.batch_size, self.num_agent, -1)
-            out_episode.append(out)
-        out_episode = torch.stack(out_episode, dim=1) # (B,T,N,out_feature)
-        agent_q = torch.gather(out_episode,3,action_batch).squeeze(3) # (B,T,N)
+        obs = obs_batch.reshape(self.batch_size, self.num_agent, -1)
+        obs = OneHot(obs)
+        obs = torch.FloatTensor([obs]).to(self.device).view(self.batch_size,self.num_agent, -1)
+        out = self.agents(obs)
+
+        agent_q = torch.gather(out,2,action_batch).squeeze(2) # (B,T)
         if not self.state_encode_mode == 4:
-            state_feature = self.state_encoder(state_batch).reshape(self.batch_size,T,-1)
+            state_feature = self.state_encoder(state_batch).reshape(self.batch_size,-1)
             q_tot = self.mixing(agent_q,state_feature) # B,T
         else:
             q_tot = self.mixing(agent_q,state_batch)
         # compute the td Q_target
         target_out_episode = []
-        for t in range(T):
-            obs = obs_batch[:, t].reshape(self.batch_size, self.num_agent, -1)
-            obs = OneHot(obs)
-            obs = torch.FloatTensor([obs]).to(self.device)
-            obs = obs.view(self.batch_size * self.num_agent, -1)
-            self.target_hidden_layer, out = self.target_agents(obs, self.target_hidden_layer)
-            out = out.view(self.batch_size, self.num_agent, -1)
-            target_out_episode.append(out)
-
-        target_out_episode = torch.stack(target_out_episode[1:], dim=1) # (B,T-1,N,out_feature)
+        t_obs = next_obs_batch.reshape(self.batch_size, self.num_agent, -1)
+        t_obs = OneHot(t_obs)
+        t_obs = torch.FloatTensor([t_obs]).to(self.device)
+        t_out = self.target_agents(t_obs)
+        t_out = t_out.view(self.batch_size, self.num_agent, -1)
         if self.isDoubleDQN:
             # Double DQN
-            next_state_q_tot = out_episode[:, 1:].clone().detach()  # B,T-1,N,act_dim
-            next_state_q_tot[action_available_batch[:,:-1]==0] = -99999 # not available
-            max_next_action = torch.argmax(next_state_q_tot,dim=3,keepdim=True) # (B,T-1,N,1)
-            max_next_q = torch.gather(target_out_episode, dim=3, index=max_next_action).squeeze(3)  # B,T-1,N
+            t_out[action_available_batch==0] = -99999 # not available
+            max_next_action = torch.argmax(t_out,dim=2,keepdim=True) # (B,N,1)
+            max_next_q = torch.gather(target_out_episode, dim=2, index=max_next_action).squeeze(2)  # B,N
         else:
-            target_out_episode[action_available_batch[:, :-1] == 0] = -99999  # not available
-            max_next_q = torch.max(target_out_episode,dim=3)[0]  # B,T-1,N
+            t_out[action_available_batch == 0] = -99999  # not available
+            max_next_q = torch.max(target_out_episode,dim=2)[0]  # B,N
 
         if not self.state_encode_mode == 4:
-            target_state_feature = self.target_state_encoder(target_state_batch).reshape(self.batch_size, T - 1, -1)
-            q_tot_target = self.target_mixing(max_next_q,target_state_feature) # B,(T-1)
+            target_state_feature = self.target_state_encoder(next_state_batch).reshape(self.batch_size, -1)
+            q_tot_target = self.target_mixing(max_next_q,target_state_feature) # B
         else:
-            q_tot_target = self.target_mixing(max_next_q,target_state_batch) # B,(T-1)
+            q_tot_target = self.target_mixing(max_next_q,next_state_batch) # B
 
-        td_error = reward_batch[:,:-1] + self.gamma * q_tot_target
+        td_error = reward_batch + self.gamma * q_tot_target
 
-        gap = td_error.detach() - q_tot[:,:-1] # B,T-1
-
-        loss = ((gap**2).sum() + ((reward_batch[:,-1] - q_tot[:,-1])**2).sum())/(self.batch_size*T)
+        loss =  F.mse_loss(q_tot,td_error.detach()*done_batch)
 
         self.optim.zero_grad()
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(self.param, 10)
         self.optim.step()
 
-        self.loss = loss
+        self.loss = loss.detach().cpu().item()
 
-    def update_target(self,episode):
-        if episode % self.target_update_episode == 0 and self.training:
-            print("[INFO] update target..")
-            self.target_agents.update(self.agents)
+    def update_target(self):
+        if self.training:
+            self.target_agents.soft_update(self.agents,self.tau)
             if not self.state_encode_mode == 4:
-                self.target_state_encoder.update(self.state_encoder)
-            self.target_mixing.update(self.mixing)
+                self.target_state_encoder.soft_update(self.state_encoder,self.tau)
+            self.target_mixing.soft_update(self.mixing,self.tau)
 
 
     def save_model(self, filename):

@@ -141,7 +141,7 @@ class RLAgent(object):
         return action_to_env
 
     def load_model(self, filename):
-        self.actor.load_state_dict(torch.load(filename))
+        self.actor.load_state_dict(torch.load(filename,map_location=device))
 
 
 def to_joint_action(action, ctrl_index):
@@ -161,7 +161,7 @@ def logits2action(logits):
 
 
 agent = RLAgent(26, 4, 3)
-actor_net = os.path.dirname(os.path.abspath(__file__)) + "/actor_2000.pth"
+actor_net = os.path.dirname(os.path.abspath(__file__)) + "/actor_16000.pth"
 agent.load_model(actor_net)
 
 

@@ -13,7 +13,6 @@ from algo.network import MixingNet, Agent, state_encoder
 
 EPSILON_MAX = 1.
 EPSILON_MIN = .05
-DELAY_TIMES = 5e4
 
 MIXING_HIDDEN_SIZE = 32
 
@@ -49,6 +48,7 @@ class QMIX:
         self.state_encode_mode = args.mode
 
         self._epsilon = EPSILON_MAX
+        self.strategy = args.strategy
 
         # Initialize the agents
         self.agents = Agent(self.obs_dim, act_dim).to(device)  # all agents share the same AgentNet
@@ -67,9 +67,10 @@ class QMIX:
         self.hidden_layer = None
         self.target_hidden_layer = None
         # Initialise replay buffer R
-        self.replay_buffer = ReplayBuffer(args.buffer_size, args.batch_size)
+        self.replay_buffer = ReplayBuffer(args.buffer_size, args.batch_size,args.strategy)
 
         self.loss = None
+        self.delay_times = args.delay_times
 
         # at the beginning, update the target
         self.target_agents.update(self.agents)
@@ -101,7 +102,7 @@ class QMIX:
 
     def epsilon_delay(self, delay_times):
         # update epsilon as paper
-        rate = delay_times / DELAY_TIMES
+        rate = delay_times / self.delay_times
         if self._epsilon > EPSILON_MIN:
             self._epsilon += rate * (EPSILON_MIN - EPSILON_MAX)
 
@@ -241,8 +242,17 @@ class QMIX:
 
 
     def save_model(self, filename):
+        if not self.state_encode_mode == 4:
+            checkpoint = {"agents": self.agents.state_dict(),
+                          "state_encoder": self.state_encoder.state_dict(),
+                          "mixing": self.mixing.state_dict(),
+                          }
+        else:
+            checkpoint = {"agents": self.agents.state_dict(),
+                          "mixing": self.mixing.state_dict(),
+                          }
         print("[INFO] save model to %s"%filename)
-        torch.save(self.agents.state_dict(), filename)
+        torch.save(checkpoint, filename)
 
     def load_model(self, run_dir, episode, continue_training = True):
 

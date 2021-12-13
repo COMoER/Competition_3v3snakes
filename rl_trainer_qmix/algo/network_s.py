@@ -55,7 +55,7 @@ class state_encoder(nn.Module):
             agent: the agent for training
         """
         for param, target_param in zip(agent.parameters(), self.parameters()):
-            target_param.data * (1.0 - tau) + param.data * tau
+            target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
 
     def hard_update(self, agent):
         for param, target_param in zip(agent.parameters(), self.parameters()):
@@ -83,20 +83,19 @@ class MixingNet(nn.Module):
         Mixing Net receive the global state and the Q_i for each agent
 
         Args:
-            qs:(B,T,N)
-            state:(B,T,state_dim)
+            qs:(B,N)
+            state:(B,state_dim)
         """
         B = qs.shape[0]
-        T = qs.shape[1]
-        w1 = torch.abs(self.hypernetwork_w1(state)).view(B*T,self.hidden_dim,self.n_agent)
-        b1 = self.hypernetwork_b1(state).view(B*T,self.hidden_dim,1)
-        w2 = torch.abs(self.hypernetwork_w2(state)).view(B*T,1,self.hidden_dim)
-        v = self.V(state).view(B*T,1,1)
-        qs = qs.view(B*T,-1,1)
+        w1 = torch.abs(self.hypernetwork_w1(state)).view(B,self.hidden_dim,self.n_agent)
+        b1 = self.hypernetwork_b1(state).view(B,self.hidden_dim,1)
+        w2 = torch.abs(self.hypernetwork_w2(state)).view(B,1,self.hidden_dim)
+        v = self.V(state).view(B,1,1)
+        qs = qs.view(B,-1,1)
         h = F.elu(torch.bmm(w1,qs) + b1)
         q = torch.bmm(w2,h)
         q = q + v
-        return q.view(B,T)
+        return q.view(B)
 
     def soft_update(self, agent, tau):
         """
@@ -105,7 +104,7 @@ class MixingNet(nn.Module):
             agent: the agent for training
         """
         for param, target_param in zip(agent.parameters(), self.parameters()):
-            target_param.data * (1.0 - tau) + param.data * tau
+            target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
 
     def hard_update(self, agent):
         for param, target_param in zip(agent.parameters(), self.parameters()):
@@ -141,14 +140,14 @@ class Agent(nn.Module):
         x2 = F.relu(self.mlp(x1))
         out = self.fc2(x2)
         return out
-    def soft_update(self,agent,tau):
+    def soft_update(self, agent, tau):
         """
         - only for target agents
         Args:
             agent: the agent for training
         """
-        for param,target_param in zip(agent.parameters(),self.parameters()):
-            target_param.data * (1.0 - tau) + param.data * tau
+        for param, target_param in zip(agent.parameters(), self.parameters()):
+            target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
 
     def hard_update(self,agent):
         for param,target_param in zip(agent.parameters(),self.parameters()):

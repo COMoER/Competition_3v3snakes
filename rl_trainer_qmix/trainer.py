@@ -38,7 +38,7 @@ def step_trainer(args):
 
     setup_seed(args.seed)
 
-    assert (args.compete + args.well_enemy + args.self_compete) == 1, "can't be both true"
+    assert (args.compete + args.well_enemy + args.self_compete) < 2, "can't be both true"
 
     # 定义保存路径
     run_dir, log_dir = make_logpath(args.game_name, args.algo)
@@ -113,7 +113,7 @@ def step_trainer(args):
 
             # ============================== add opponent actions =================================
             # use greedy policy for enemy TODO: both side are QMIX to train
-            if args.compete or args.well_enemy or args.self_enemy:
+            if args.compete or args.well_enemy or args.self_compete:
                 model_e = model_enemy if args.compete or args.well_enemy else model
                 actions_e = model_e.choose_action(obs_e, action_available_e)
                 actions_e = actions_e.reshape(-1)
@@ -162,6 +162,8 @@ def step_trainer(args):
             model.epsilon_delay()
             model.update()
             obs, state_map = next_obs, next_state_map
+
+            state_to_training = next_state_to_training # TODO: a great BUG!!!!
             if args.compete:
                 model_enemy.replay_buffer.append([state_map_e, obs_e, actions_e, step_reward_e, next_state_map_e,next_obs_e,
                                             actions_available_e, done])
@@ -284,7 +286,7 @@ def rnn_trainer(args):
 
     setup_seed(args.seed)
 
-    assert (args.compete+args.well_enemy+args.self_compete) == 1, "can't be both true"
+    assert (args.compete+args.well_enemy+args.self_compete) < 2, "can't be both true"
 
     # 定义保存路径
     run_dir, log_dir = make_logpath(args.game_name, args.algo)
@@ -360,7 +362,7 @@ def rnn_trainer(args):
 
             # ============================== add opponent actions =================================
             # use greedy policy for enemy TODO: both side are QMIX to train
-            if args.compete or args.well_enemy or args.self_enemy:
+            if args.compete or args.well_enemy or args.self_compete:
                 model_e = model_enemy if args.compete or args.well_enemy else model
                 actions_e = model_e.choose_action(obs_e, action_available_e)
                 actions_e = actions_e.reshape(-1)
@@ -407,6 +409,8 @@ def rnn_trainer(args):
             if args.well_enemy:
                 obs_e, state_map_e = next_obs_e, next_state_map_e
             obs, state_map = next_obs, next_state_map
+
+            state_to_training = next_state_to_training # TODO: a great BUG!!!!
 
             step += 1
 
@@ -463,6 +467,7 @@ def rnn_trainer(args):
         model.reset(args.batch_size)
         if args.self_compete:
             model.replay_buffer.push(enemy_replay_buffer)
+            enemy_replay_buffer.clear()
         model.replay_buffer.push(replay_buffer)
         replay_buffer.clear()
         model.epsilon_delay(step)

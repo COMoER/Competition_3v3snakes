@@ -2,6 +2,8 @@ import numpy as np
 import torch
 import random
 from agent.rl_test.submission import rl_agent, rl_get_observations
+from agent.qmix_s_test.submission import s_agent
+from agent.greedy.submission import action_greedy
 from agent.qmix.submission import agent, get_observations
 from env.chooseenv import make
 from tabulate import tabulate
@@ -26,6 +28,12 @@ def get_actions(state, algo, indexs):
     if algo == 'qmix':
         observation = get_observations(state, indexs, 26, height=10, width=20)
         actions = agent.choose_action_global(observation)
+    if algo == 'qmix_s':
+        observation = get_observations(state, indexs, 26, height=10, width=20)
+        actions = s_agent.choose_action_global(observation)
+
+    if algo=="greedy":
+        actions = action_greedy(state,indexs,10,20)
 
     return actions
 

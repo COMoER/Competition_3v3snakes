@@ -14,7 +14,6 @@ from algo.network_s import MixingNet, Agent, state_encoder
 
 EPSILON_MAX = 1.
 EPSILON_MIN = .05
-DELAY_TIMES = 5e4
 
 MIXING_HIDDEN_SIZE = 32
 
@@ -49,8 +48,11 @@ class QMIX_s:
         self.training = True
         self.state_encode_mode = args.mode
         self.tau = args.tau
+        self.strategy = args.strategy
+        self.hard = args.hard_update
+        self.step = 0
 
-        self.replay_buffer = ReplayBuffer_s(args.buffer_size, args.batch_size)
+        self.replay_buffer = ReplayBuffer_s(args.buffer_size, args.batch_size,args.strategy)
 
         self._epsilon = EPSILON_MAX
 
@@ -69,12 +71,13 @@ class QMIX_s:
         self.target_mixing = MixingNet(num_agent, state_feature_dim, MIXING_HIDDEN_SIZE).to(device)
 
         self.loss = None
+        self.delay_times = args.delay_times
 
         # at the beginning, update the target
-        self.target_agents.update(self.agents)
+        self.target_agents.hard_update(self.agents)
         if args.mode < 4:
-            self.target_state_encoder.update(self.state_encoder)
-        self.target_mixing.update(self.mixing)
+            self.target_state_encoder.hard_update(self.state_encoder)
+        self.target_mixing.hard_update(self.mixing)
 
         self.target_update_episode = args.update_target_episode
 
@@ -93,7 +96,7 @@ class QMIX_s:
 
     def epsilon_delay(self):
         # update epsilon as paper
-        rate = 1 / DELAY_TIMES
+        rate = 1./self.delay_times
         if self._epsilon > EPSILON_MIN:
             self._epsilon += rate * (EPSILON_MIN - EPSILON_MAX)
 
@@ -111,7 +114,7 @@ class QMIX_s:
 
         epsilon = self._epsilon
         obs = torch.FloatTensor([obs]).to(self.device).view(N,-1)
-        self.hidden_layer, out = self.agents(obs, self.hidden_layer)
+        out = self.agents(obs)
         q_value = out.cpu().detach().numpy() #(N,act_dim)
         if not action_available is None:
             q_value[action_available==0] = -99999 # -inf q_value to avoid choose this action
@@ -162,12 +165,11 @@ class QMIX_s:
 
         agent_q = torch.gather(out,2,action_batch).squeeze(2) # (B,T)
         if not self.state_encode_mode == 4:
-            state_feature = self.state_encoder(state_batch).reshape(self.batch_size,-1)
+            state_feature = self.state_encoder(state_batch.view(self.batch_size,1,self.state_height_dim,self.state_width_dim)).reshape(self.batch_size,-1)
             q_tot = self.mixing(agent_q,state_feature) # B,T
         else:
             q_tot = self.mixing(agent_q,state_batch)
         # compute the td Q_target
-        target_out_episode = []
         t_obs = next_obs_batch.reshape(self.batch_size, self.num_agent, -1)
         t_obs = OneHot(t_obs)
         t_obs = torch.FloatTensor([t_obs]).to(self.device)
@@ -175,22 +177,23 @@ class QMIX_s:
         t_out = t_out.view(self.batch_size, self.num_agent, -1)
         if self.isDoubleDQN:
             # Double DQN
-            t_out[action_available_batch==0] = -99999 # not available
-            max_next_action = torch.argmax(t_out,dim=2,keepdim=True) # (B,N,1)
-            max_next_q = torch.gather(target_out_episode, dim=2, index=max_next_action).squeeze(2)  # B,N
+            out_ = out.clone().detach()
+            out_[action_available_batch==0] = -99999 # not available
+            max_next_action = torch.argmax(out_,dim=2,keepdim=True) # (B,N,1)
+            max_next_q = torch.gather(t_out, dim=2, index=max_next_action).squeeze(2)  # B,N
         else:
             t_out[action_available_batch == 0] = -99999  # not available
-            max_next_q = torch.max(target_out_episode,dim=2)[0]  # B,N
+            max_next_q = torch.max(t_out,dim=2)[0]  # B,N
 
         if not self.state_encode_mode == 4:
-            target_state_feature = self.target_state_encoder(next_state_batch).reshape(self.batch_size, -1)
+            target_state_feature = self.target_state_encoder(next_state_batch.view(self.batch_size,1,self.state_height_dim,self.state_width_dim)).reshape(self.batch_size, -1)
             q_tot_target = self.target_mixing(max_next_q,target_state_feature) # B
         else:
             q_tot_target = self.target_mixing(max_next_q,next_state_batch) # B
 
         td_error = reward_batch + self.gamma * q_tot_target
 
-        loss =  F.mse_loss(q_tot,td_error.detach()*done_batch)
+        loss =  F.mse_loss(q_tot,td_error.detach()*(1-done_batch))
 
         self.optim.zero_grad()
         loss.backward()
@@ -201,19 +204,37 @@ class QMIX_s:
 
     def update_target(self):
         if self.training:
-            self.target_agents.soft_update(self.agents,self.tau)
-            if not self.state_encode_mode == 4:
-                self.target_state_encoder.soft_update(self.state_encoder,self.tau)
-            self.target_mixing.soft_update(self.mixing,self.tau)
+            if self.hard:
+                self.step += 1
+                if self.step % self.target_update_episode == 0: # in there episode is step
+                    self.target_agents.hard_update(self.agents)
+                    if not self.state_encode_mode == 4:
+                        self.target_state_encoder.hard_update(self.state_encoder)
+                    self.target_mixing.hard_update(self.mixing)
+            else:
+                self.target_agents.soft_update(self.agents, self.tau)
+                if not self.state_encode_mode == 4:
+                    self.target_state_encoder.soft_update(self.state_encoder, self.tau)
+                self.target_mixing.soft_update(self.mixing, self.tau)
+
 
 
     def save_model(self, filename):
+        if not self.state_encode_mode == 4:
+            checkpoint = {"agents": self.agents.state_dict(),
+                          "state_encoder": self.state_encoder.state_dict(),
+                          "mixing": self.mixing.state_dict(),
+                          }
+        else:
+            checkpoint = {"agents": self.agents.state_dict(),
+                          "mixing": self.mixing.state_dict(),
+                          }
         print("[INFO] save model to %s"%filename)
-        torch.save(self.agents.state_dict(), filename)
+        torch.save(checkpoint, filename)
 
     def load_model(self, run_dir, episode, continue_training = True):
 
-        if continue_training:
+        if continue_training and self.strategy:
             filename = os.path.join(run_dir,"qmix_ckpt_%d.pth"%episode)
             print("[INFO] load check point %s",filename)
             ckpt = torch.load(filename,map_location=self.device)
@@ -232,13 +253,28 @@ class QMIX_s:
 
     def save_checkpoint(self,filename):
         # TODO: seed not change
-        print("[INFO] save checkpoint to %s"%filename)
-        checkpoint = {"agents":self.agents.state_dict(),
-                      "state_encoder":self.state_encoder.state_dict(),
-                      "mixing":self.mixing.state_dict(),
-                      "t_agents": self.target_agents.state_dict(),
-                      "t_state_encoder": self.target_state_encoder.state_dict(),
-                      "t_mixing": self.target_mixing.state_dict(),
-                      "rb":self.replay_buffer
-                      }
-        torch.save(checkpoint,filename)
+        if self.strategy:
+            print("[INFO] save checkpoint to %s" % filename)
+            if self.state_encode_mode == 4:
+                checkpoint = {"agents": self.agents.state_dict(),
+                          "state_encoder": self.state_encoder.state_dict(),
+                          "mixing": self.mixing.state_dict(),
+                          "t_agents": self.target_agents.state_dict(),
+                          "t_state_encoder": self.target_state_encoder.state_dict(),
+                          "t_mixing": self.target_mixing.state_dict(),
+                          "optim":self.optim.state_dict(),
+                          "rb": self.replay_buffer,
+                          "episode":self._epsilon
+                          }
+            else:
+
+                checkpoint = {"agents": self.agents.state_dict(),
+                          "mixing": self.mixing.state_dict(),
+                          "t_agents": self.target_agents.state_dict(),
+                          "t_state_encoder": self.target_state_encoder.state_dict(),
+                          "t_mixing": self.target_mixing.state_dict(),
+                          "optim":self.optim.state_dict(),
+                          "rb": self.replay_buffer
+                          }
+            torch.save(checkpoint, filename)
+

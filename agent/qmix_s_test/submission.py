@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import numpy as np
 
 device = torch.device("cpu")
-EPISODE = 200000
+EPISODE = 50000
 
 
 
@@ -98,56 +98,6 @@ def get_observations(state, agents_index, obs_dim, height, width):
 
 HIDDEN_SIZE = 64
 
-class Agent(nn.Module):
-    def __init__(self, in_feature, out_feature):
-        """
-        Args:
-            in_feature:feature of observation and action (and agent one-hot embedding)
-        """
-        super(Agent, self).__init__()
-        self.in_feature = in_feature
-        self.out_feature = out_feature
-        self.fc1 = nn.Linear(in_feature, HIDDEN_SIZE)
-        # GRU
-        self.GRU = nn.GRUCell(HIDDEN_SIZE, HIDDEN_SIZE)
-        self.fc2 = nn.Linear(HIDDEN_SIZE, out_feature)
-
-    def init_hidden(self):
-        """
-        Because the hidden size is needed to expand according to the input tensor,
-        so there just generate the size 1 hidden
-        """
-        return self.fc1.weight.new_zeros((1, HIDDEN_SIZE))
-
-    def forward(self, obs, h):
-        """
-        - B batch_size
-        - N number of agents( all agents share the weight)
-
-        Args:
-            obs: (Any,in_feature)
-            h:(Any..Any,hidden_size)
-        Return:
-            h_next:(Any,hidden_feature)
-            out: (Any,out_feature)
-        """
-        h = h.reshape(-1, HIDDEN_SIZE)
-        x = self.fc1(obs)
-        x = F.relu(x)
-        h_next = self.GRU(x, h)
-        out = self.fc2(h_next)
-        return h_next, out
-
-    def update(self, agent):
-        """
-        - only for target agents
-        - every 200 episode, update the target network param as in DQN
-        Args:
-            agent: the agent for training
-        """
-        for param, target_param in zip(agent.parameters(), self.parameters()):
-            target_param.data.copy_(param.data)
-
 
 def OneHot(obs: np.ndarray):
     """
@@ -160,6 +110,34 @@ def OneHot(obs: np.ndarray):
     encode = np.eye(N) # one hot encoding
     return np.concatenate([obs, encode], axis=1)
 
+class Agent(nn.Module):
+    def __init__(self,in_feature,out_feature):
+        """
+        Args:
+            in_feature:feature of observation and action (and agent one-hot embedding)
+        """
+        super(Agent, self).__init__()
+        self.in_feature = in_feature
+        self.out_feature = out_feature
+        self.fc1 = nn.Linear(in_feature,HIDDEN_SIZE)
+        self.mlp = nn.Linear(HIDDEN_SIZE,HIDDEN_SIZE)
+        self.fc2 = nn.Linear(HIDDEN_SIZE,out_feature)
+
+    def forward(self,obs):
+        """
+        - B batch_size
+        - N number of agents( all agents share the weight)
+
+        Args:
+            obs: (Any,in_feature)
+        Return:
+            out: (Any,out_feature)
+        """
+        x = self.fc1(obs)
+        x1 = F.relu(x)
+        x2 = F.relu(self.mlp(x1))
+        out = self.fc2(x2)
+        return out
 
 class QMIX:
     def __init__(self, obs_dim, act_dim, num_agent):
@@ -171,22 +149,12 @@ class QMIX:
         # Initialize the agents
         self.agents = Agent(self.obs_dim, act_dim).to(device)  # all agents share the same AgentNet
 
-        self.hidden_layer = None
-
-    def reset(self):
-        """
-        reset the hidden layer of each rnn when every episode begin
-        """
-        self.hidden_layer = self.agents.init_hidden()
-        self.hidden_layer = self.hidden_layer.expand(self.num_agent, -1)
-    def update_hidden(self,h):
-        self.hidden_layer = h
     def choose_action_global(self,obs):
         with torch.no_grad():
             obs = OneHot(obs)
             N, _ = obs.shape
             obs = torch.FloatTensor([obs]).to(self.device).reshape(self.num_agent, -1)
-            self.hidden_layer, out = self.agents(obs, self.hidden_layer)
+            out = self.agents(obs)
             q_value = out.cpu().detach().numpy()
             action_greedy = np.argmax(q_value, axis=1)
             return action_greedy
@@ -202,27 +170,26 @@ class QMIX:
             obs = OneHot(obs)
             N, _ = obs.shape
             obs = torch.FloatTensor([obs]).to(self.device).reshape(self.num_agent, -1)
-            h, out = self.agents(obs, self.hidden_layer)
+            out = self.agents(obs)
             q_value = out.cpu().detach().numpy()
             q_value[index][action_available == 0] = -99999
             action_greedy = np.argmax(q_value, axis=1)
 
-        return action_greedy,h
+        return action_greedy
 
 
     def load_model(self, run_dir, episode):
         filename = os.path.join(run_dir, "qmix_agent_%d.pth" % episode)
         f = torch.load(filename,device)
-        if 'agents' in f.keys():
+        if isinstance(f,dict):
             self.agents.load_state_dict(f['agents'])
         else:
             self.agents.load_state_dict(f)
         self.agents.eval()
 
-agent = QMIX(26,4,3)
-agent.reset()
+s_agent = QMIX(26,4,3)
 actor_net = os.path.dirname(os.path.abspath(__file__))
-agent.load_model(actor_net,EPISODE)
+s_agent.load_model(actor_net,EPISODE)
 
 def to_joint_action(action,index):
     action = action[index]
@@ -242,8 +209,6 @@ def my_controller(observation_list, action_space_list, is_act_continuous):
     o_indexs_min = 3 if o_index > 4 else 0
     indexs = [o_indexs_min, o_indexs_min + 1, o_indexs_min + 2]
     observation = get_observations(obs, indexs, obs_dim, height=board_height, width=board_width)
-    actions,h = agent.choose_action(observation,action_available,(o_index-2)%3)
-    if (o_index-2)%3 == 2:
-        agent.update_hidden(h)
+    actions = s_agent.choose_action(observation,action_available,(o_index-2)%3)
     actions = to_joint_action(actions,(o_index-2)%3)
     return actions

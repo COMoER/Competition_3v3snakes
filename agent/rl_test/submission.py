@@ -161,7 +161,7 @@ def logits2action(logits):
 
 
 rl_agent = RLAgent(26, 4, 3)
-actor_net = os.path.dirname(os.path.abspath(__file__)) + "/actor_16000.pth"
+actor_net = os.path.dirname(os.path.abspath(__file__)) + "/actor_50000.pth"
 rl_agent.load_model(actor_net)
 
 

@@ -8,7 +8,7 @@ import numpy as np
 
 
 HIDDEN_SIZE=256
-device =  torch.device("cpu")
+device =  torch.device("cuda:0")
 
 from typing import Union
 Activation = Union[str, nn.Module]
@@ -161,7 +161,7 @@ def logits2action(logits):
 
 
 rl_agent = RLAgent(26, 4, 3)
-actor_net = os.path.dirname(os.path.abspath(__file__)) + "/actor_50000.pth"
+actor_net = os.path.dirname(os.path.abspath(__file__)) + "/actor_16000.pth"
 rl_agent.load_model(actor_net)
 
 

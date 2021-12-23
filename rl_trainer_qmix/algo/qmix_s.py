@@ -165,7 +165,12 @@ class QMIX_s:
 
         agent_q = torch.gather(out,2,action_batch).squeeze(2) # (B,T)
         if not self.state_encode_mode == 4:
-            state_feature = self.state_encoder(state_batch.view(self.batch_size,1,self.state_height_dim,self.state_width_dim)).reshape(self.batch_size,-1)
+            if self.state_encode_mode == 1:
+                state_feature = self.state_encoder(
+                    state_batch.view(self.batch_size, -1, self.state_height_dim, self.state_width_dim)).reshape(
+                    self.batch_size, -1)
+            else:
+                state_feature = self.state_encoder(state_batch.view(self.batch_size,1,self.state_height_dim,self.state_width_dim)).reshape(self.batch_size,-1)
             q_tot = self.mixing(agent_q,state_feature) # B,T
         else:
             q_tot = self.mixing(agent_q,state_batch)
@@ -186,7 +191,12 @@ class QMIX_s:
             max_next_q = torch.max(t_out,dim=2)[0]  # B,N
 
         if not self.state_encode_mode == 4:
-            target_state_feature = self.target_state_encoder(next_state_batch.view(self.batch_size,1,self.state_height_dim,self.state_width_dim)).reshape(self.batch_size, -1)
+            if self.state_encode_mode == 1:
+                target_state_feature = self.target_state_encoder(
+                    next_state_batch.view(self.batch_size, -1, self.state_height_dim, self.state_width_dim)).reshape(
+                    self.batch_size, -1)
+            else:
+                target_state_feature = self.target_state_encoder(next_state_batch.view(self.batch_size,1,self.state_height_dim,self.state_width_dim)).reshape(self.batch_size, -1)
             q_tot_target = self.target_mixing(max_next_q,target_state_feature) # B
         else:
             q_tot_target = self.target_mixing(max_next_q,next_state_batch) # B

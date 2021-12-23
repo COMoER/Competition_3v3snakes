@@ -49,6 +49,7 @@ if __name__ == '__main__':
     parser.add_argument("--delay_times",default = 5e4, type = int,help="delay by step")
     parser.add_argument('--strategy',action = 'store_true',help="if strategy, buffer_size is meaningless")
     parser.add_argument("--hard_update",action='store_true',help="only for step_model")
+    parser.add_argument("--random",action='store_true')
 
     parser.add_argument("--save_interval", default=200, type=int)
     parser.add_argument("--model_episode", default=0, type=int)

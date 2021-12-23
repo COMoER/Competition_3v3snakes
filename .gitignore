@@ -6,3 +6,7 @@ rl_trainer/models/
 rl_trainer_qmix/models/
 *.pth
 vis/*
+rl_trainer_qmix/vis/*
+train_sh/*
+output_error/*
+test_output/*

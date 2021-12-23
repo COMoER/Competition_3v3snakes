@@ -162,8 +162,8 @@ def step_trainer(args):
             model.epsilon_delay()
             model.update()
             obs, state_map = next_obs, next_state_map
-
-            state_to_training = next_state_to_training # TODO: a great BUG!!!!
+            if not args.random:
+                state_to_training = next_state_to_training # TODO: a great BUG!!!!
             if args.compete:
                 model_enemy.replay_buffer.append([state_map_e, obs_e, actions_e, step_reward_e, next_state_map_e,next_obs_e,
                                             actions_available_e, done])
@@ -410,7 +410,8 @@ def rnn_trainer(args):
                 obs_e, state_map_e = next_obs_e, next_state_map_e
             obs, state_map = next_obs, next_state_map
 
-            state_to_training = next_state_to_training # TODO: a great BUG!!!!
+            if not args.random:
+                state_to_training = next_state_to_training # TODO: a great BUG!!!!
 
             step += 1
 

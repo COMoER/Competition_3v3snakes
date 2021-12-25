@@ -114,7 +114,7 @@ def get_observations(state, agents_index, obs_dim, height, width,mode):
     state = np.squeeze(state_, axis=2)
 
     if mode == 1: # one hot
-        state_index = state.reshape(-1)-1 # (1-7) -> (0,6)
+        state_index = state.reshape(-1)
         L = np.max(state_index) + 1
         eye = np.eye(L)
         # One Hot

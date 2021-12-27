@@ -4,7 +4,8 @@ import random
 
 
 from agent.greedy.submission import action_greedy
-from agent.qmix.submission import get_observations,agent
+from agent.agent_eva.eva import q_agent,QMIX_TYPE
+from agent.agent_eva.common import get_observations
 from agent.rl_test.submission import rl_agent,rl_get_observations
 from env.chooseenv import make
 from tabulate import tabulate
@@ -12,6 +13,10 @@ import argparse
 from torch.distributions import Categorical
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+
+PATH = os.environ.get('LOG')
+RUN = int(os.environ.get('RUN'))
+EPISODE = int(os.environ.get('EPISODE'))
 
 def get_actions(state, algo, indexs):
 
@@ -28,7 +33,7 @@ def get_actions(state, algo, indexs):
     # QMIX
     if algo == 'qmix':
         observation = get_observations(state, indexs, 26, height=10, width=20)
-        actions = agent.choose_action_global(observation)
+        actions = q_agent.choose_action_global(observation)
 
     if algo=="greedy":
         actions = action_greedy(state,indexs,10,20)
@@ -47,7 +52,8 @@ def get_join_actions(obs, algo_list):
     return actions
 
 def reset():
-    agent.reset()
+    if QMIX_TYPE == 1:
+        q_agent.reset()
 
 def run_game(env, algo_list, episode, verbose=False):
 
@@ -99,6 +105,9 @@ def run_game(env, algo_list, episode, verbose=False):
     data = [['score', np.round(np.sum(total_reward[:3]), 2), np.round(np.sum(total_reward[3:]), 2)],
             ['win', num_win[0], num_win[1]]]
     print(tabulate(data, headers=header, tablefmt='pretty'))
+
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"test_output",PATH),'a') as f:
+        f.write(f"run {RUN:d} episode {EPISODE:d}\nscore {np.round(np.sum(total_reward[:3]), 2):.3f} {np.round(np.sum(total_reward[3:]), 2):.3f}\nwin {int(num_win[0]):d} {int(num_win[1]):d}\n\n")
 
 
 
